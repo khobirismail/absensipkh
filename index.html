@@ -45,6 +45,8 @@
   input,select{width:100%;font-family:inherit;font-size:.98rem;padding:11px 13px;border:1px solid var(--line);
     border-radius:10px;background:#fff;color:var(--ink)}
   input:focus,select:focus{outline:none;border-color:var(--teal);box-shadow:0 0 0 3px rgba(15,94,84,.12)}
+  input[readonly],select:disabled{background:#f1ece1;color:var(--ink);cursor:default;opacity:1;-webkit-text-fill-color:var(--ink)}
+  input[readonly]:focus{box-shadow:none;border-color:var(--line)}
   .hint{font-size:.78rem;color:var(--muted);margin-top:5px}
   h2{font-family:'Fraunces',serif;font-weight:600;font-size:1.4rem;color:var(--teal-dk);margin-bottom:4px;display:flex;align-items:center;gap:9px}
   h2 .n{font-size:.85rem;background:var(--teal);color:#fff;width:26px;height:26px;border-radius:50%;
@@ -90,9 +92,9 @@
     <div class="drop" id="drop">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4m0 0L8 8m4-4l4 4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke-linecap="round"/></svg>
       <b>Tarik file ke sini atau klik untuk memilih</b>
-      <span>Format: file ekspor "Absensi Pegawai Bulanan" (.xlsx / .xls)</span>
+      <span>Terima: file ekspor "Absensi Kemensos" (.xls)</span>
     </div>
-    <input type="file" id="file" accept=".xlsx,.xls" class="hidden">
+    <input type="file" id="file" accept=".xlsx,.xls,.htm,.html" class="hidden">
     <div class="privacy">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6l8-4z" stroke-linejoin="round"/></svg>
       Data tidak dikirim ke server mana pun — semua diproses di perangkat Anda.
@@ -104,21 +106,21 @@
   <section class="card hidden" id="cfgCard">
     <h2><span class="n">2</span> Periksa &amp; sesuaikan</h2>
     <div class="grid">
-      <div><label>NIP</label><input id="nip"><div class="hint">Terdeteksi otomatis dari file</div></div>
+      <div><label>NIP</label><input id="nip" readonly><div class="hint">Terdeteksi otomatis dari file</div></div>
       <div><label>Bulan / Tahun</label>
         <div style="display:flex;gap:10px">
-          <select id="bulan" style="flex:1.4"></select>
-          <input id="tahun" style="flex:1" inputmode="numeric">
+          <select id="bulan" style="flex:1.4" disabled></select>
+          <input id="tahun" style="flex:1" inputmode="numeric" readonly>
         </div>
       </div>
       <div><label>Format Tanggal</label>
-        <select id="fmt">
+        <select id="fmt" disabled>
           <option value="dmy">DD-MM-YYYY (02-06-2026)</option>
           <option value="ymd">YYYY-MM-DD (2026-06-02)</option>
         </select>
       </div>
-      <div><label>Jenis (bila kosong di sumber)</label>
-        <select id="jenis">
+      <div><label>Jenis</label>
+        <select id="jenis" disabled>
           <option>Fleksibel Bekerja Secara Lokasi</option>
           <option>Bekerja di Kantor</option>
         </select>
@@ -139,7 +141,7 @@
     <div class="msg ok" id="okMsg"></div>
   </section>
 
-  <footer>Made with <span class="heart">&#10084;</span> in Sampang — &copy; Muhammad Tajib</footer>
+  <footer>Made with <span class="heart">&#10084;</span> @Home — &copy; Muhammad Tajib</footer>
 </div>
 
 <script>
@@ -189,16 +191,25 @@ function handleFile(file){
   const reader=new FileReader();
   reader.onload=e=>{
     try{
-      const wb=XLSX.read(new Uint8Array(e.target.result),{type:"array",cellDates:false});
-      const ws=wb.Sheets[wb.SheetNames[0]];
-      const aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:""});
-      parse(aoa);
+      const bytes=new Uint8Array(e.target.result);
+      // cek apakah ini file frameset (.xls pembungkus tanpa data)
+      const head=new TextDecoder("latin1").decode(bytes.slice(0,4000)).toLowerCase();
+      const isFrameset = head.includes("frameset") && head.includes("sheet001");
+      const wb=XLSX.read(bytes,{type:"array",cellDates:false});
+      // file .xls HTML bisa terpecah jadi beberapa tabel/sheet (metadata + data);
+      // gabungkan semuanya jadi satu agar header & data terbaca utuh
+      let aoa=[];
+      wb.SheetNames.forEach(n=>{
+        const s=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:""});
+        aoa=aoa.concat(s);
+      });
+      parse(aoa,isFrameset);
     }catch(err){showErr("Gagal membaca file: "+err.message);}
   };
   reader.readAsArrayBuffer(file);
 }
 
-function parse(aoa){
+function parse(aoa,isFrameset){
   // deteksi NIP, bulan, tahun, dan baris header
   let headerRow=-1, cols={};
   meta={nip:"",bulan:meta.bulan,tahun:meta.tahun};
@@ -218,7 +229,15 @@ function parse(aoa){
       cols.ket=up.findIndex(x=>x.includes("KETERANGAN"));
     }
   }
-  if(headerRow<0){showErr("Tidak menemukan baris header 'TANGGAL'. Pastikan ini file ekspor Absensi Pegawai Bulanan dalam format .xlsx.");return;}
+  if(headerRow<0){
+    if(isFrameset){
+      showErr("File .xls ini hanya 'pembungkus' tanpa data. Datanya ada di file terpisah: "+
+              "buka folder bernama sama yang berakhiran '_files', lalu unggah file sheet001.htm di dalamnya.");
+    }else{
+      showErr("Tidak menemukan baris header 'TANGGAL'. Pastikan ini file ekspor Absensi Pegawai Bulanan (.xlsx atau sheet001.htm).");
+    }
+    return;
+  }
   meta._aoa=aoa; meta._cols=cols; meta._hr=headerRow;
 
   // tampilkan nilai terdeteksi ke form
